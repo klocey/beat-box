@@ -13,8 +13,7 @@
 }
 
 body {
-  background: radial-gradient(ellipse at center, #1a0a35 0%, #0a0014 70%);
-  background-attachment: fixed;
+  background: linear-gradient(rgba(10, 0, 20, 0.72), rgba(10, 0, 20, 0.85)), url('BG.png') center / cover no-repeat fixed;
   color: var(--text-light);
   font-family: 'Orbitron', sans-serif;
   min-height: 100vh;

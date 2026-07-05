@@ -1,6 +1,7 @@
 import os
 import re
 
+import dash
 import dash_bootstrap_components as dbc
 from dash import ALL, Dash, Input, Output, State, ctx, dcc, html, no_update
 from dash.dependencies import ClientsideFunction
@@ -11,7 +12,6 @@ from dash.dependencies import ClientsideFunction
 # --------------------------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HYPE_DIR = os.path.join(BASE_DIR, "assets", "hype")
-FX_DIR = os.path.join(BASE_DIR, "assets", "fx")
 AUDIO_EXTS = (".mp3", ".wav", ".ogg", ".m4a")
 
 
@@ -41,7 +41,29 @@ def format_mmss(total_seconds):
 
 
 HYPE_FILES = scan_audio_folder(HYPE_DIR)
-FX_FILES = scan_audio_folder(FX_DIR)
+
+app = dash.Dash(
+    __name__, 
+    external_stylesheets=[dbc.themes.BOOTSTRAP],
+    suppress_callback_exceptions=True,
+    meta_tags=[{"name": "viewport", "content": "width=device-width, initial-scale=1.0"}]
+)
+server = app.server
+
+default_hype_file = HYPE_FILES[0] if HYPE_FILES else None
+default_hype_url = app.get_asset_url(f"hype/{default_hype_file}") if default_hype_file else None
+
+# Metronome click sounds — all synthesized client-side (see metronome.js),
+# no audio files involved. Each key maps to its own hand-tuned synthesis
+# recipe in JS (oscillators / noise / multi-pulse envelopes), not just a
+# simple frequency+decay pair.
+FX_PRESETS = {
+    "soft_tock": "SOFT TOCK",
+    "soft_thump": "SOFT THUMP",
+    "heavy_bag": "HEAVY BAG",
+    "bass_drop": "BASS DROP",
+    "heart_beat": "HEART BEAT",
+}
 
 # (label, beats, subdivisions) — all combos are "1 subdivision", i.e. one
 # hit per quarter-note beat, matching your original Easy Metronome settings.
@@ -60,17 +82,14 @@ app = Dash(__name__, external_stylesheets=[dbc.themes.CYBORG], update_title=None
 app.title = "Beat Box"
 server = app.server  # needed for Heroku (gunicorn app:server)
 
-default_fx_file = FX_FILES[0] if FX_FILES else None
-default_fx_url = app.get_asset_url(f"fx/{default_fx_file}") if default_fx_file else "SYNTH"
-
 INITIAL_STATE = {
     "bpm": 120,
     "beats": 3,
     "subdivisions": 1,
     "combo_label": COMBO_LABELS[3],
-    "fx_url": default_fx_url,
-    "hype_url": None,
-    "mix": 20,  # 0 = metronome only, 100 = music only
+    "fx_preset": "heavy_bag",
+    "hype_url": default_hype_url,
+    "mix": 100,  # 0 = metronome only, 100 = music only — starts full music, dial back to bring in the tick
     "running": False,
     "rounds": 3,
     "round_minutes": 1,
@@ -144,15 +163,14 @@ def build_hype_modal():
 
 
 def build_fx_modal():
-    buttons = [dbc.Button("SYNTH CLICK", id="fx-synth-btn", className="neon-btn neon-btn-magenta m-2", n_clicks=0)]
-    buttons += [
-        dbc.Button(label_from_filename(f), id={"type": "fx-btn", "index": f}, className="neon-btn m-2", n_clicks=0)
-        for f in FX_FILES
+    preset_buttons = [
+        dbc.Button(label, id=f"fx-preset-{key}", className="neon-btn m-2", n_clicks=0)
+        for key, label in FX_PRESETS.items()
     ]
     return dbc.Modal(
         [
             dbc.ModalHeader(dbc.ModalTitle("Metronome Sound")),
-            dbc.ModalBody(html.Div(buttons, className="button-row")),
+            dbc.ModalBody(html.Div(preset_buttons, className="button-row")),
         ],
         id="modal-fx",
         is_open=False,
@@ -369,12 +387,15 @@ def toggle_hype_modal(_o, _off, _sel, is_open):
 @app.callback(
     Output("modal-fx", "is_open"),
     Input("btn-fx", "n_clicks"),
-    Input("fx-synth-btn", "n_clicks"),
-    Input({"type": "fx-btn", "index": ALL}, "n_clicks"),
+    Input("fx-preset-soft_tock", "n_clicks"),
+    Input("fx-preset-soft_thump", "n_clicks"),
+    Input("fx-preset-heavy_bag", "n_clicks"),
+    Input("fx-preset-bass_drop", "n_clicks"),
+    Input("fx-preset-heart_beat", "n_clicks"),
     State("modal-fx", "is_open"),
     prevent_initial_call=True,
 )
-def toggle_fx_modal(_o, _synth, _sel, is_open):
+def toggle_fx_modal(_o, _1, _2, _3, _4, _5, is_open):
     if ctx.triggered_id == "btn-fx":
         return not is_open
     return False
@@ -465,20 +486,18 @@ def select_hype(_clicks, _off, data):
 
 @app.callback(
     Output("state-store", "data", allow_duplicate=True),
-    Input("fx-synth-btn", "n_clicks"),
-    Input({"type": "fx-btn", "index": ALL}, "n_clicks"),
+    Input("fx-preset-soft_tock", "n_clicks"),
+    Input("fx-preset-soft_thump", "n_clicks"),
+    Input("fx-preset-heavy_bag", "n_clicks"),
+    Input("fx-preset-bass_drop", "n_clicks"),
+    Input("fx-preset-heart_beat", "n_clicks"),
     State("state-store", "data"),
     prevent_initial_call=True,
 )
-def select_fx(_synth, _clicks, data):
-    trig = ctx.triggered_id
+def select_fx_preset(_1, _2, _3, _4, _5, data):
+    preset_key = ctx.triggered_id.replace("fx-preset-", "")
     data = dict(data)
-    if trig == "fx-synth-btn":
-        data["fx_url"] = "SYNTH"
-    elif isinstance(trig, dict):
-        data["fx_url"] = app.get_asset_url(f"fx/{trig['index']}")
-    else:
-        return no_update
+    data["fx_preset"] = preset_key
     return data
 
 

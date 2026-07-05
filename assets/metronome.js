@@ -21,9 +21,8 @@ function getMetro() {
       lookahead: 25,
       scheduleAheadTime: 0.4,
       notesInQueue: [],
-      fxUrl: null,
+      fxPreset: "soft_tock",
       hypeUrl: null,
-      fxBuffer: null,
       hypeBuffer: null,
       hypeSource: null,
       bufferCache: {},
@@ -80,7 +79,7 @@ function formatTime(ms) {
 }
 
 function loadBuffer(m, url) {
-  if (!url || url === "SYNTH") return Promise.resolve(null);
+  if (!url) return Promise.resolve(null);
   if (m.bufferCache[url]) return Promise.resolve(m.bufferCache[url]);
   return fetch(url)
     .then((r) => r.arrayBuffer())
@@ -101,44 +100,153 @@ function setMix(m, val) {
   if (m.hypeGain) m.hypeGain.gain.value = hypeGainVal * 0.2;
 }
 
-// Synthesized metronome click — a short oscillator burst with a fast
-// attack/decay envelope, so it works with no audio file at all (and
-// therefore needs nothing served by Heroku either). The accent beat gets
-// both a higher pitch and more volume so it stands out clearly.
-function playSynthClick(m, time, isAccent) {
+// ---- Metronome click sounds ----
+// Each preset is its own small synthesis recipe rather than one generic
+// tone with knobs. isAccent (the last hit in the combo — the power punch)
+// always gets extra pitch and/or volume so it stands out.
+
+function getNoiseBuffer(m) {
+  if (m._noiseBuffer) return m._noiseBuffer;
+  const length = Math.floor(m.ctx.sampleRate * 0.3);
+  const buffer = m.ctx.createBuffer(1, length, m.ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < length; i++) {
+    data[i] = Math.random() * 2 - 1;
+  }
+  m._noiseBuffer = buffer;
+  return buffer;
+}
+
+function playSoftTock(m, time, isAccent) {
+  const peak = isAccent ? 1.0 : 0.4;
+  const freq = isAccent ? 900 : 560;
   const osc = m.ctx.createOscillator();
-  osc.type = "square";
-  osc.frequency.setValueAtTime(isAccent ? 1600 : 950, time);
-
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(freq, time);
   const gain = m.ctx.createGain();
-  const peak = isAccent ? 1.0 : 0.35;
   gain.gain.setValueAtTime(0.0001, time);
-  gain.gain.exponentialRampToValueAtTime(peak, time + 0.002);
-  gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.05);
-
+  gain.gain.exponentialRampToValueAtTime(peak, time + 0.003);
+  gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.11);
   osc.connect(gain);
   gain.connect(m.fxGain);
   osc.start(time);
-  osc.stop(time + 0.06);
+  osc.stop(time + 0.13);
+}
+
+function playSoftThump(m, time, isAccent) {
+  const peak = isAccent ? 0.9 : 0.4;
+  const freq = isAccent ? 320 : 230;
+  const osc = m.ctx.createOscillator();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(freq, time);
+  const gain = m.ctx.createGain();
+  gain.gain.setValueAtTime(0.0001, time);
+  gain.gain.linearRampToValueAtTime(peak, time + 0.015); // softer attack than tock
+  gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.18);
+  osc.connect(gain);
+  gain.connect(m.fxGain);
+  osc.start(time);
+  osc.stop(time + 0.2);
+}
+
+function playHeavyBag(m, time, isAccent) {
+  const peak = isAccent ? 1.0 : 0.5;
+
+  // Low-end "body" of the hit.
+  const bodyFreq = isAccent ? 130 : 100;
+  const osc = m.ctx.createOscillator();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(bodyFreq, time);
+  osc.frequency.exponentialRampToValueAtTime(Math.max(30, bodyFreq * 0.5), time + 0.15);
+  const bodyGain = m.ctx.createGain();
+  bodyGain.gain.setValueAtTime(0.0001, time);
+  bodyGain.gain.exponentialRampToValueAtTime(peak, time + 0.004);
+  bodyGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.16);
+  osc.connect(bodyGain);
+  bodyGain.connect(m.fxGain);
+  osc.start(time);
+  osc.stop(time + 0.18);
+
+  // Short filtered-noise "impact" texture layered on top.
+  const noiseSrc = m.ctx.createBufferSource();
+  noiseSrc.buffer = getNoiseBuffer(m);
+  const noiseFilter = m.ctx.createBiquadFilter();
+  noiseFilter.type = "lowpass";
+  noiseFilter.frequency.value = isAccent ? 500 : 350;
+  const noiseGain = m.ctx.createGain();
+  noiseGain.gain.setValueAtTime(0.0001, time);
+  noiseGain.gain.exponentialRampToValueAtTime(peak * 0.6, time + 0.002);
+  noiseGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.08);
+  noiseSrc.connect(noiseFilter);
+  noiseFilter.connect(noiseGain);
+  noiseGain.connect(m.fxGain);
+  noiseSrc.start(time);
+  noiseSrc.stop(time + 0.09);
+}
+
+function playBassDrop(m, time, isAccent) {
+  const peak = isAccent ? 1.0 : 0.5;
+  const startFreq = isAccent ? 480 : 380;
+  const osc = m.ctx.createOscillator();
+  osc.type = "triangle";
+  osc.frequency.setValueAtTime(startFreq, time);
+  osc.frequency.exponentialRampToValueAtTime(35, time + 0.22);
+  const gain = m.ctx.createGain();
+  gain.gain.setValueAtTime(0.0001, time);
+  gain.gain.exponentialRampToValueAtTime(peak, time + 0.005);
+  gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.24);
+  osc.connect(gain);
+  gain.connect(m.fxGain);
+  osc.start(time);
+  osc.stop(time + 0.26);
+}
+
+function playHeartBeat(m, time, isAccent) {
+  const peak = isAccent ? 1.0 : 0.55;
+
+  function pulse(t, freq, pk, dur) {
+    const osc = m.ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(freq, t);
+    const gain = m.ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(pk, t + 0.004);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    osc.connect(gain);
+    gain.connect(m.fxGain);
+    osc.start(t);
+    osc.stop(t + dur + 0.02);
+  }
+
+  pulse(time, isAccent ? 110 : 90, peak, 0.09); // "lub"
+  pulse(time + 0.13, isAccent ? 95 : 75, peak * 0.7, 0.07); // "dub"
+}
+
+function playClick(m, time, isAccent) {
+  switch (m.fxPreset) {
+    case "soft_thump":
+      playSoftThump(m, time, isAccent);
+      break;
+    case "heavy_bag":
+      playHeavyBag(m, time, isAccent);
+      break;
+    case "bass_drop":
+      playBassDrop(m, time, isAccent);
+      break;
+    case "heart_beat":
+      playHeartBeat(m, time, isAccent);
+      break;
+    case "soft_tock":
+    default:
+      playSoftTock(m, time, isAccent);
+      break;
+  }
 }
 
 function scheduleTick(m, beatIndex, time) {
   const totalTicks = m.beats * m.subdivisions;
   const isAccent = beatIndex === totalTicks - 1; // power punch = last hit in the combo
-
-  if (m.fxUrl === "SYNTH") {
-    playSynthClick(m, time, isAccent);
-  } else {
-    if (!m.fxBuffer) return;
-    const src = m.ctx.createBufferSource();
-    src.buffer = m.fxBuffer;
-    const accentGain = m.ctx.createGain();
-    accentGain.gain.value = isAccent ? 1.0 : 0.25;
-    src.connect(accentGain);
-    accentGain.connect(m.fxGain);
-    src.start(time);
-  }
-
+  playClick(m, time, isAccent);
   m.notesInQueue.push({ beatIndex: beatIndex, time: time, seq: m.tickSeq++, isAccent: isAccent });
   m.program.totalPunches += 1;
 }
@@ -223,22 +331,19 @@ function startEngine(m, storeData) {
 
   p.lastPollTime = performance.now();
 
-  Promise.all([
-    loadBuffer(m, m.fxUrl).then((buf) => {
-      m.fxBuffer = buf;
-    }),
-    loadBuffer(m, m.hypeUrl).then((buf) => {
+  loadBuffer(m, m.hypeUrl)
+    .then((buf) => {
       m.hypeBuffer = buf;
-    }),
-  ]).then(() => {
-    if (!m.isRunning) return; // stopped again while files were loading
-    m.currentTick = 0;
-    m.notesInQueue = [];
-    m.nextNoteTime = m.ctx.currentTime + 0.1;
-    startHype(m);
-    if (m.timerID) clearInterval(m.timerID);
-    m.timerID = setInterval(scheduler, m.lookahead);
-  });
+    })
+    .then(() => {
+      if (!m.isRunning) return; // stopped again while the hype track was loading
+      m.currentTick = 0;
+      m.notesInQueue = [];
+      m.nextNoteTime = m.ctx.currentTime + 0.1;
+      startHype(m);
+      if (m.timerID) clearInterval(m.timerID);
+      m.timerID = setInterval(scheduler, m.lookahead);
+    });
 }
 
 function renderSnapshot(m, storeData) {
@@ -306,12 +411,10 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
       m.beats = storeData.beats || m.beats;
       m.subdivisions = storeData.subdivisions || 1;
       m.mix = storeData.mix === undefined ? m.mix : storeData.mix;
+      m.fxPreset = storeData.fx_preset || m.fxPreset;
 
-      const newFxUrl = storeData.fx_url || null;
       const newHypeUrl = storeData.hype_url || null;
-      const fxChanged = newFxUrl !== m.fxUrl;
       const hypeChanged = newHypeUrl !== m.hypeUrl;
-      m.fxUrl = newFxUrl;
       m.hypeUrl = newHypeUrl;
 
       if (wantRunning && !m.isRunning) {
@@ -322,12 +425,6 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
         stopEngine(m);
       } else if (wantRunning && m.isRunning) {
         setMix(m, m.mix);
-        if (fxChanged) {
-          ensureCtx(m);
-          loadBuffer(m, m.fxUrl).then((buf) => {
-            m.fxBuffer = buf;
-          });
-        }
         if (hypeChanged) {
           ensureCtx(m);
           loadBuffer(m, m.hypeUrl).then((buf) => {
