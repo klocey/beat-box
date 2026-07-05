@@ -121,6 +121,17 @@ function setMix(m, val) {
   if (m.hypeGain) m.hypeGain.gain.value = hypeGainVal * 0.2;
 }
 
+// Breaks always play hype music at full volume (same as Mix=100), no
+// matter what the Mix slider is set to for rounds — a break shouldn't be
+// muted just because you like the metronome loud during training.
+function applyMixForPhase(m) {
+  if (m.program && m.program.phase === "break") {
+    setMix(m, 100);
+  } else {
+    setMix(m, m.mix);
+  }
+}
+
 // ---- Metronome click sounds ----
 // Each preset is its own small synthesis recipe rather than one generic
 // tone with knobs. isAccent (the last hit in the combo — the power punch)
@@ -412,7 +423,7 @@ function hardReset(m, storeData) {
 
 function startEngine(m, storeData) {
   ensureCtx(m);
-  setMix(m, m.mix);
+  applyMixForPhase(m);
 
   const p = m.program;
   if (p.phase === "idle" || p.phase === "finished") {
@@ -545,7 +556,7 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
           stopEngine(m);
         }
       } else if (wantRunning && m.isRunning) {
-        setMix(m, m.mix);
+        applyMixForPhase(m);
         if (hypeChanged) {
           ensureCtx(m);
           loadBuffer(m, m.hypeUrl).then((buf) => {
@@ -632,6 +643,7 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
             p.phase = "break";
             p.remainingMs += p.breakMs;
           }
+          applyMixForPhase(m);
           playBell(m); // round end
         } else if (p.phase === "break") {
           p.phase = "round";
@@ -640,6 +652,7 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
           m.currentTick = 0;
           m.notesInQueue = [];
           m.nextNoteTime = m.ctx.currentTime + 0.1;
+          applyMixForPhase(m);
           playBell(m); // round start
         }
       }
