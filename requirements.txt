@@ -1,0 +1,5 @@
+werkzeug==3.0.6
+dash==3.0.1
+gunicorn==23.0.0
+Flask==3.0.3
+dash_bootstrap_components==2.0.0
