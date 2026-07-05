@@ -1,7 +1,6 @@
 import os
 import re
 
-import dash
 import dash_bootstrap_components as dbc
 from dash import ALL, Dash, Input, Output, State, ctx, dcc, html, no_update
 from dash.dependencies import ClientsideFunction
@@ -40,18 +39,18 @@ def format_mmss(total_seconds):
     return f"{m:02d}:{s:02d}"
 
 
+def build_beat_rings():
+    # Fixed concentric rings for the "subwoofer" beat visual. Always the
+    # same 3 rings regardless of which combo is selected — color, glow,
+    # and vibration amount are driven entirely by CSS classes toggled per
+    # beat (see metronome.js / styles.css), not by ring count or size.
+    sizes = [90, 
+             #60,
+             30]  # outer -> inner, percent of container
+    return [html.Div(className="beat-ring", style={"width": f"{s}%", "height": f"{s}%"}) for s in sizes]
+
+
 HYPE_FILES = scan_audio_folder(HYPE_DIR)
-
-# --------------------------------------------------------------------------
-# App setup
-# --------------------------------------------------------------------------
-app = Dash(__name__, external_stylesheets=[dbc.themes.CYBORG], update_title=None)
-app.title = "Beat Box"
-server = app.server  # needed for Heroku (gunicorn app:server)
-
-
-default_hype_file = HYPE_FILES[0] if HYPE_FILES else None
-default_hype_url = app.get_asset_url(f"hype/{default_hype_file}") if default_hype_file else None
 
 # Metronome click sounds — all synthesized client-side (see metronome.js),
 # no audio files involved. Each key maps to its own hand-tuned synthesis
@@ -62,7 +61,8 @@ FX_PRESETS = {
     "soft_thump": "SOFT THUMP",
     "heavy_bag": "HEAVY BAG",
     "bass_drop": "BASS DROP",
-    "heart_beat": "HEART BEAT",
+    "kick_808": "808 KICK",
+    "retro_clap": "RETRO CLAP",
 }
 
 # (label, beats, subdivisions) — all combos are "1 subdivision", i.e. one
@@ -75,6 +75,15 @@ COMBOS = [
 ]
 COMBO_LABELS = {beats: name.upper() for name, beats, _ in COMBOS}
 
+# --------------------------------------------------------------------------
+# App setup
+# --------------------------------------------------------------------------
+app = Dash(__name__, external_stylesheets=[dbc.themes.CYBORG], update_title=None)
+app.title = "Beat Box"
+server = app.server  # needed for Heroku (gunicorn app:server)
+
+default_hype_file = HYPE_FILES[0] if HYPE_FILES else None
+default_hype_url = app.get_asset_url(f"hype/{default_hype_file}") if default_hype_file else None
 
 INITIAL_STATE = {
     "bpm": 120,
@@ -87,8 +96,9 @@ INITIAL_STATE = {
     "running": False,
     "rounds": 3,
     "round_minutes": 1,
-    "break_seconds": 30,
+    "break_seconds": 10,
     "reset_token": 0,
+    "countdown_seconds": 3,
 }
 
 # --------------------------------------------------------------------------
@@ -138,7 +148,7 @@ def build_bpm_modal():
 
 
 def build_hype_modal():
-    buttons = [dbc.Button("OFF", id="hype-off-btn", className="neon-btn neon-btn-magenta m-2", n_clicks=0)]
+    buttons = [dbc.Button("OFF", id="hype-off-btn", className="neon-btn m-2", n_clicks=0)]
     buttons += [
         dbc.Button(label_from_filename(f), id={"type": "hype-btn", "index": f}, className="neon-btn m-2", n_clicks=0)
         for f in HYPE_FILES
@@ -149,6 +159,7 @@ def build_hype_modal():
         [
             dbc.ModalHeader(dbc.ModalTitle("Hype Music")),
             dbc.ModalBody(html.Div(buttons, className="button-row")),
+            dbc.ModalFooter(dbc.Button("Close", id="hype-close-btn", className="neon-btn neon-btn-magenta")),
         ],
         id="modal-hype",
         is_open=False,
@@ -165,6 +176,7 @@ def build_fx_modal():
         [
             dbc.ModalHeader(dbc.ModalTitle("Metronome Sound")),
             dbc.ModalBody(html.Div(preset_buttons, className="button-row")),
+            dbc.ModalFooter(dbc.Button("Close", id="fx-close-btn", className="neon-btn neon-btn-magenta")),
         ],
         id="modal-fx",
         is_open=False,
@@ -250,6 +262,35 @@ def build_program_modal():
     )
 
 
+def build_countdown_modal():
+    return dbc.Modal(
+        [
+            dbc.ModalBody(
+                [
+                    html.Div("GET READY", className="combo-label"),
+                    html.Div("10", id="countdown-display", className="beat-display"),
+                    html.Div("GET READY TIME", className="combo-label", style={"marginTop": "1.5rem"}),
+                    html.Div(
+                        [
+                            dbc.Button("3 SEC", id="countdown-seconds-3", className="neon-btn m-2", n_clicks=0),
+                            dbc.Button("5 SEC", id="countdown-seconds-5", className="neon-btn m-2", n_clicks=0),
+                            dbc.Button("10 SEC", id="countdown-seconds-10", className="neon-btn m-2", n_clicks=0),
+                        ],
+                        className="button-row",
+                    ),
+                ],
+                className="countdown-modal-body",
+            ),
+            dbc.ModalFooter(dbc.Button("Cancel", id="countdown-cancel-btn", className="neon-btn neon-btn-red")),
+        ],
+        id="modal-countdown",
+        is_open=False,
+        centered=True,
+        backdrop="static",
+        keyboard=False,
+    )
+
+
 # --------------------------------------------------------------------------
 # Layout
 # --------------------------------------------------------------------------
@@ -258,13 +299,18 @@ app.layout = dbc.Container(
         dcc.Store(id="state-store", data=INITIAL_STATE),
         dcc.Interval(id="beat-poll-interval", interval=100, n_intervals=0),
         html.Div(id="audio-engine-dummy", style={"display": "none"}),
+        html.Div(id="preview-engine-dummy", style={"display": "none"}),
         html.Div("BEAT BOX", className="app-title", style={'marginBottom': '30px'},),
         html.Div(
             [
                 html.Div(
                     [
                         html.Div(INITIAL_STATE["combo_label"], id="combo-label-display", className="combo-label"),
-                        html.Div("--", id="beat-display", className="beat-display"),
+                        html.Div(
+                            build_beat_rings(),
+                            id="beat-display",
+                            className="beat-display",
+                        ),
                     ],
                     className="display-col display-col-left",
                 ),
@@ -285,7 +331,7 @@ app.layout = dbc.Container(
                 ),
                 html.Div(
                     [
-                        html.Div("PUNCHES", className="combo-label"),
+                        html.Div("BEATS", className="combo-label"),
                         html.Div("0", id="total-punches-display", className="total-punches"),
                     ],
                     className="display-col display-col-right",
@@ -325,6 +371,7 @@ app.layout = dbc.Container(
         build_fx_modal(),
         build_mix_modal(),
         build_program_modal(),
+        build_countdown_modal(),
     ],
     fluid=True,
     style={"paddingBottom": "4rem"},
@@ -367,12 +414,11 @@ def toggle_bpm_modal(_o, _c, is_open):
 @app.callback(
     Output("modal-hype", "is_open"),
     Input("btn-hype", "n_clicks"),
-    Input("hype-off-btn", "n_clicks"),
-    Input({"type": "hype-btn", "index": ALL}, "n_clicks"),
+    Input("hype-close-btn", "n_clicks"),
     State("modal-hype", "is_open"),
     prevent_initial_call=True,
 )
-def toggle_hype_modal(_o, _off, _sel, is_open):
+def toggle_hype_modal(_o, _c, is_open):
     if ctx.triggered_id == "btn-hype":
         return not is_open
     return False
@@ -381,15 +427,11 @@ def toggle_hype_modal(_o, _off, _sel, is_open):
 @app.callback(
     Output("modal-fx", "is_open"),
     Input("btn-fx", "n_clicks"),
-    Input("fx-preset-soft_tock", "n_clicks"),
-    Input("fx-preset-soft_thump", "n_clicks"),
-    Input("fx-preset-heavy_bag", "n_clicks"),
-    Input("fx-preset-bass_drop", "n_clicks"),
-    Input("fx-preset-heart_beat", "n_clicks"),
+    Input("fx-close-btn", "n_clicks"),
     State("modal-fx", "is_open"),
     prevent_initial_call=True,
 )
-def toggle_fx_modal(_o, _1, _2, _3, _4, _5, is_open):
+def toggle_fx_modal(_o, _c, is_open):
     if ctx.triggered_id == "btn-fx":
         return not is_open
     return False
@@ -484,11 +526,12 @@ def select_hype(_clicks, _off, data):
     Input("fx-preset-soft_thump", "n_clicks"),
     Input("fx-preset-heavy_bag", "n_clicks"),
     Input("fx-preset-bass_drop", "n_clicks"),
-    Input("fx-preset-heart_beat", "n_clicks"),
+    Input("fx-preset-kick_808", "n_clicks"),
+    Input("fx-preset-retro_clap", "n_clicks"),
     State("state-store", "data"),
     prevent_initial_call=True,
 )
-def select_fx_preset(_1, _2, _3, _4, _5, data):
+def select_fx_preset(_1, _2, _3, _4, _5, _6, data):
     preset_key = ctx.triggered_id.replace("fx-preset-", "")
     data = dict(data)
     data["fx_preset"] = preset_key
@@ -516,6 +559,18 @@ def update_mix(value, data):
 def toggle_running(_n, data):
     data = dict(data)
     data["running"] = not data.get("running", False)
+    return data
+
+
+@app.callback(
+    Output("state-store", "data", allow_duplicate=True),
+    Input("countdown-cancel-btn", "n_clicks"),
+    State("state-store", "data"),
+    prevent_initial_call=True,
+)
+def cancel_countdown(_n, data):
+    data = dict(data)
+    data["running"] = False
     return data
 
 
@@ -571,6 +626,21 @@ def update_break_seconds(value, data):
     return data
 
 
+@app.callback(
+    Output("state-store", "data", allow_duplicate=True),
+    Input("countdown-seconds-3", "n_clicks"),
+    Input("countdown-seconds-5", "n_clicks"),
+    Input("countdown-seconds-10", "n_clicks"),
+    State("state-store", "data"),
+    prevent_initial_call=True,
+)
+def update_countdown_seconds(_3, _5, _10, data):
+    seconds = int(ctx.triggered_id.split("-")[-1])
+    data = dict(data)
+    data["countdown_seconds"] = seconds
+    return data
+
+
 # --------------------------------------------------------------------------
 # Pure display-sync callbacks (no duplicate-output concerns)
 # --------------------------------------------------------------------------
@@ -594,6 +664,42 @@ def sync_start_button(data):
 )
 def sync_combo_label(data):
     return data.get("combo_label", "")
+
+
+@app.callback(
+    Output({"type": "hype-btn", "index": ALL}, "className"),
+    Output("hype-off-btn", "className"),
+    Input("state-store", "data"),
+)
+def sync_hype_button_colors(data):
+    current_url = data.get("hype_url")
+    hype_classes = []
+    for f in HYPE_FILES:
+        url = app.get_asset_url(f"hype/{f}")
+        if url == current_url:
+            hype_classes.append("neon-btn neon-btn-magenta m-2")
+        else:
+            hype_classes.append("neon-btn m-2")
+    off_class = "neon-btn neon-btn-magenta m-2" if current_url is None else "neon-btn m-2"
+    return hype_classes, off_class
+
+
+@app.callback(
+    Output("fx-preset-soft_tock", "className"),
+    Output("fx-preset-soft_thump", "className"),
+    Output("fx-preset-heavy_bag", "className"),
+    Output("fx-preset-bass_drop", "className"),
+    Output("fx-preset-kick_808", "className"),
+    Output("fx-preset-retro_clap", "className"),
+    Input("state-store", "data"),
+)
+def sync_fx_button_colors(data):
+    current = data.get("fx_preset")
+    order = ["soft_tock", "soft_thump", "heavy_bag", "bass_drop", "kick_808", "retro_clap"]
+    return [
+        "neon-btn neon-btn-magenta m-2" if key == current else "neon-btn m-2"
+        for key in order
+    ]
 
 
 @app.callback(
@@ -650,6 +756,8 @@ app.clientside_callback(
     Output("total-punches-display", "children", allow_duplicate=True),
     Output("beat-display", "children", allow_duplicate=True),
     Output("beat-display", "className", allow_duplicate=True),
+    Output("modal-countdown", "is_open", allow_duplicate=True),
+    Output("countdown-display", "children", allow_duplicate=True),
     Input("state-store", "data"),
     prevent_initial_call=True,
 )
@@ -663,8 +771,19 @@ app.clientside_callback(
     Output("round-status-display", "children", allow_duplicate=True),
     Output("total-punches-display", "children", allow_duplicate=True),
     Output("state-store", "data", allow_duplicate=True),
+    Output("modal-countdown", "is_open", allow_duplicate=True),
+    Output("countdown-display", "children", allow_duplicate=True),
     Input("beat-poll-interval", "n_intervals"),
     State("state-store", "data"),
+    prevent_initial_call=True,
+)
+
+app.clientside_callback(
+    ClientsideFunction(namespace="clientside", function_name="handlePreview"),
+    Output("preview-engine-dummy", "children"),
+    Input("state-store", "data"),
+    Input("modal-hype", "is_open"),
+    Input("modal-fx", "is_open"),
     prevent_initial_call=True,
 )
 

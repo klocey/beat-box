@@ -38,6 +38,21 @@ function getMetro() {
         totalPunches: 0,
         lastPollTime: 0,
       },
+      countdown: {
+        active: false,
+        remainingMs: 0,
+        lastPollTime: 0,
+        storeDataSnapshot: null,
+        configuredSeconds: 10,
+      },
+      previewGain: null,
+      preview: {
+        hypeModalWasOpen: false,
+        lastHypeUrl: null,
+        hypeSource: null,
+        fxModalWasOpen: false,
+        lastFxPreset: null,
+      },
     };
   }
   return window._metro;
@@ -48,8 +63,14 @@ function ensureCtx(m) {
     m.ctx = new (window.AudioContext || window.webkitAudioContext)();
     m.fxGain = m.ctx.createGain();
     m.hypeGain = m.ctx.createGain();
+    m.previewGain = m.ctx.createGain();
+    m.previewGain.gain.value = 0.6;
+    m.bellGain = m.ctx.createGain();
+    m.bellGain.gain.value = 0.5; // fixed — round bell isn't affected by the Mix slider
     m.fxGain.connect(m.ctx.destination);
     m.hypeGain.connect(m.ctx.destination);
+    m.previewGain.connect(m.ctx.destination);
+    m.bellGain.connect(m.ctx.destination);
   }
   if (m.ctx.state === "suspended") {
     m.ctx.resume();
@@ -201,25 +222,81 @@ function playBassDrop(m, time, isAccent) {
   osc.stop(time + 0.26);
 }
 
-function playHeartBeat(m, time, isAccent) {
-  const peak = isAccent ? 1.0 : 0.55;
+function playKick808(m, time, isAccent) {
+  // Pure sine pitch-drop, no noise/click transient layered on top — keeps
+  // it warm and headphone-safe rather than snappy. Attack is a short
+  // linear ramp (6ms) rather than a near-instant jump, which is what
+  // creates an audible "click" at the front of a percussive hit.
+  const peak = isAccent ? 0.85 : 0.45;
+  const startFreq = isAccent ? 150 : 120;
+  const osc = m.ctx.createOscillator();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(startFreq, time);
+  osc.frequency.exponentialRampToValueAtTime(35, time + 0.22);
+  const gain = m.ctx.createGain();
+  gain.gain.setValueAtTime(0.0001, time);
+  gain.gain.linearRampToValueAtTime(peak, time + 0.006);
+  gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.26);
+  osc.connect(gain);
+  gain.connect(m.fxGain);
+  osc.start(time);
+  osc.stop(time + 0.28);
+}
 
-  function pulse(t, freq, pk, dur) {
+function playRetroClap(m, time, isAccent) {
+  // Three slightly-offset noise bursts (like a real clap's overlapping
+  // hand-claps), each bandpass-filtered around 1200Hz rather than left as
+  // raw full-spectrum noise — that filtering is what keeps it from
+  // sounding like a sharp, sibilant snap in headphones. Soft 6ms attack
+  // on each layer for the same reason.
+  const peak = isAccent ? 0.7 : 0.35;
+  const offsets = [0, 0.012, 0.024];
+  offsets.forEach((offset, idx) => {
+    const t = time + offset;
+    const noiseSrc = m.ctx.createBufferSource();
+    noiseSrc.buffer = getNoiseBuffer(m);
+    const filter = m.ctx.createBiquadFilter();
+    filter.type = "bandpass";
+    filter.frequency.value = 1200;
+    filter.Q.value = 0.7;
+    const layerGain = m.ctx.createGain();
+    const layerPeak = idx === offsets.length - 1 ? peak : peak * 0.7;
+    layerGain.gain.setValueAtTime(0.0001, t);
+    layerGain.gain.linearRampToValueAtTime(layerPeak, t + 0.006);
+    layerGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+    noiseSrc.connect(filter);
+    filter.connect(layerGain);
+    layerGain.connect(m.fxGain);
+    noiseSrc.start(t);
+    noiseSrc.stop(t + 0.1);
+  });
+}
+
+// Boxing-bell tone for round start/end — several sine oscillators at
+// slightly inharmonic frequency ratios (the classic recipe for a metallic
+// "bell" timbre, as opposed to a pure single-frequency tone), with a long
+// decay. Always plays through its own dedicated gain node, independent of
+// whichever FX preset is selected and independent of the Mix slider.
+function playBell(m) {
+  if (!m.ctx) return;
+  const time = m.ctx.currentTime + 0.01;
+  const fundamental = 880;
+  const partials = [1, 2.0, 2.76, 4.07, 5.4];
+  const decay = 1.8;
+  partials.forEach((ratio, idx) => {
     const osc = m.ctx.createOscillator();
     osc.type = "sine";
-    osc.frequency.setValueAtTime(freq, t);
-    const gain = m.ctx.createGain();
-    gain.gain.setValueAtTime(0.0001, t);
-    gain.gain.exponentialRampToValueAtTime(pk, t + 0.004);
-    gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    osc.connect(gain);
-    gain.connect(m.fxGain);
-    osc.start(t);
-    osc.stop(t + dur + 0.02);
-  }
-
-  pulse(time, isAccent ? 110 : 90, peak, 0.09); // "lub"
-  pulse(time + 0.13, isAccent ? 95 : 75, peak * 0.7, 0.07); // "dub"
+    osc.frequency.setValueAtTime(fundamental * ratio, time);
+    const partialGain = m.ctx.createGain();
+    const peak = 0.5 / (idx + 1);
+    partialGain.gain.setValueAtTime(0.0001, time);
+    partialGain.gain.linearRampToValueAtTime(peak, time + 0.008);
+    partialGain.gain.exponentialRampToValueAtTime(0.0001, time + decay);
+    osc.connect(partialGain);
+    partialGain.connect(m.bellGain);
+    osc.start(time);
+    osc.stop(time + decay + 0.1);
+  });
 }
 
 function playClick(m, time, isAccent) {
@@ -233,8 +310,11 @@ function playClick(m, time, isAccent) {
     case "bass_drop":
       playBassDrop(m, time, isAccent);
       break;
-    case "heart_beat":
-      playHeartBeat(m, time, isAccent);
+    case "kick_808":
+      playKick808(m, time, isAccent);
+      break;
+    case "retro_clap":
+      playRetroClap(m, time, isAccent);
       break;
     case "soft_tock":
     default:
@@ -286,6 +366,18 @@ function startHype(m) {
   m.hypeSource = src;
 }
 
+function stopPreviewHype(m) {
+  if (m.preview.hypeSource) {
+    try {
+      m.preview.hypeSource.stop();
+    } catch (e) {
+      /* already stopped */
+    }
+    m.preview.hypeSource.disconnect();
+    m.preview.hypeSource = null;
+  }
+}
+
 function stopEngine(m) {
   if (m.timerID) {
     clearInterval(m.timerID);
@@ -306,6 +398,13 @@ function hardReset(m, storeData) {
     remainingMs: 0,
     totalPunches: 0,
     lastPollTime: 0,
+  };
+  m.countdown = {
+    active: false,
+    remainingMs: 0,
+    lastPollTime: 0,
+    storeDataSnapshot: null,
+    configuredSeconds: storeData.countdown_seconds || 10,
   };
   m.currentTick = 0;
   m.notesInQueue = [];
@@ -390,13 +489,14 @@ const NO_UPDATE_7 = function () {
 window.dash_clientside = Object.assign({}, window.dash_clientside, {
   clientside: {
     // Fires on every state-store change (bpm/fx/hype/mix/rounds/etc,
-    // running toggles, and reset). Handles: hard resets, starting/stopping
-    // the engine, live parameter updates while running, and rendering the
-    // idle/paused display snapshot when not running.
+    // running toggles, and reset). Handles: hard resets, kicking off the
+    // 10s get-ready countdown, starting/stopping the engine, live
+    // parameter updates while running, and rendering the idle/paused
+    // display snapshot when not running.
     updateAudioEngine: function (storeData) {
       const nu = window.dash_clientside.no_update;
       if (!storeData) {
-        return [nu, nu, nu, nu, nu, nu, nu];
+        return [nu, nu, nu, nu, nu, nu, nu, nu, nu];
       }
 
       const m = getMetro();
@@ -417,12 +517,33 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
       const hypeChanged = newHypeUrl !== m.hypeUrl;
       m.hypeUrl = newHypeUrl;
 
-      if (wantRunning && !m.isRunning) {
-        m.isRunning = true;
-        startEngine(m, storeData);
-      } else if (!wantRunning && m.isRunning) {
-        m.isRunning = false;
-        stopEngine(m);
+      let countdownOpen = nu;
+      let countdownText = nu;
+
+      if (wantRunning && !m.isRunning && !m.countdown.active) {
+        // Start pressed (fresh or resume) — begin the get-ready countdown
+        // (duration picked in the Get Ready modal) instead of starting the
+        // engine immediately.
+        ensureCtx(m);
+        const seconds = storeData.countdown_seconds || 10;
+        m.countdown.active = true;
+        m.countdown.remainingMs = seconds * 1000;
+        m.countdown.configuredSeconds = seconds;
+        m.countdown.lastPollTime = performance.now();
+        m.countdown.storeDataSnapshot = storeData;
+        countdownOpen = true;
+        countdownText = String(seconds);
+      } else if (!wantRunning) {
+        // Stop or Reset — cancel any in-progress countdown and halt audio.
+        if (m.countdown.active) {
+          m.countdown.active = false;
+          countdownOpen = false;
+          countdownText = "";
+        }
+        if (m.isRunning) {
+          m.isRunning = false;
+          stopEngine(m);
+        }
       } else if (wantRunning && m.isRunning) {
         setMix(m, m.mix);
         if (hypeChanged) {
@@ -433,24 +554,65 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
           });
         }
       } else if (m.ctx) {
+        // wantRunning && !m.isRunning && countdown already active — a
+        // setting tweak mid-countdown (Mix slider, or picking a different
+        // Get Ready duration while it's counting down).
         setMix(m, m.mix);
+        if (m.countdown.active) {
+          const seconds = storeData.countdown_seconds || 10;
+          if (seconds !== m.countdown.configuredSeconds) {
+            m.countdown.configuredSeconds = seconds;
+            m.countdown.remainingMs = seconds * 1000;
+            countdownOpen = true;
+            countdownText = String(seconds);
+          }
+        }
       }
 
-      if (!m.isRunning) {
+      if (!m.isRunning && !m.countdown.active) {
         const snap = renderSnapshot(m, storeData);
-        return [nu, snap.timerText, snap.timerClass, snap.statusText, snap.punchesText, snap.beatText, snap.beatClass];
+        return [
+          nu,
+          snap.timerText,
+          snap.timerClass,
+          snap.statusText,
+          snap.punchesText,
+          nu,
+          snap.beatClass,
+          countdownOpen,
+          countdownText,
+        ];
       }
-      return [nu, nu, nu, nu, nu, nu, nu];
+      return [nu, nu, nu, nu, nu, nu, nu, countdownOpen, countdownText];
     },
 
     // Fires every 100ms while running (disabled otherwise). Drives the
-    // round/break countdown, phase transitions, live beat display, and
-    // punch counter, and signals back to Dash when the whole program ends.
+    // 10s get-ready countdown, the round/break countdown, phase
+    // transitions, live beat display, and punch counter, and signals back
+    // to Dash when the whole program ends.
     pollDisplay: function (n_intervals, storeData) {
       const nu = window.dash_clientside.no_update;
       const m = getMetro();
+
+      if (m.countdown.active) {
+        const now = performance.now();
+        const delta = now - (m.countdown.lastPollTime || now);
+        m.countdown.lastPollTime = now;
+        m.countdown.remainingMs -= delta;
+
+        if (m.countdown.remainingMs <= 0) {
+          m.countdown.active = false;
+          m.isRunning = true;
+          startEngine(m, m.countdown.storeDataSnapshot || storeData);
+          playBell(m);
+          return [nu, nu, nu, nu, nu, nu, nu, false, ""];
+        }
+        const secondsLeft = Math.ceil(m.countdown.remainingMs / 1000);
+        return [nu, nu, nu, nu, nu, nu, nu, true, String(secondsLeft)];
+      }
+
       if (!m.isRunning || !m.ctx) {
-        return [nu, nu, nu, nu, nu, nu, nu];
+        return [nu, nu, nu, nu, nu, nu, nu, nu, nu];
       }
 
       const p = m.program;
@@ -470,6 +632,7 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
             p.phase = "break";
             p.remainingMs += p.breakMs;
           }
+          playBell(m); // round end
         } else if (p.phase === "break") {
           p.phase = "round";
           p.currentRound += 1;
@@ -477,10 +640,10 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
           m.currentTick = 0;
           m.notesInQueue = [];
           m.nextNoteTime = m.ctx.currentTime + 0.1;
+          playBell(m); // round start
         }
       }
 
-      let beatText = nu;
       let beatClass = nu;
       if (p.phase === "round") {
         const nowAudio = m.ctx.currentTime;
@@ -489,13 +652,11 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
           current = m.notesInQueue.shift();
         }
         if (current !== null) {
-          beatText = String(current.beatIndex + 1);
-          const parity = current.seq % 2 === 0 ? "flash-even" : "flash-odd";
-          const accent = current.isAccent ? " accent" : "";
-          beatClass = "beat-display " + parity + accent;
+          const parity = current.seq % 2 === 0 ? "pulse-a" : "pulse-b";
+          const type = current.isAccent ? "beat-major" : "beat-minor";
+          beatClass = "beat-display " + parity + " " + type;
         }
       } else {
-        beatText = "--";
         beatClass = "beat-display";
       }
 
@@ -512,7 +673,72 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
         newStoreData = Object.assign({}, storeData, { running: false });
       }
 
-      return [beatText, beatClass, timerText, timerClass, statusText, punchesText, newStoreData];
+      return [nu, beatClass, timerText, timerClass, statusText, punchesText, newStoreData, nu, nu];
+    },
+
+    // Fires on state-store changes and on the Hype/FX modals opening or
+    // closing. Lets you hear a sound the instant you pick it in either
+    // modal — independent of whether a training session is actually
+    // running — and stops playback the moment the modal closes.
+    handlePreview: function (storeData, hypeModalOpen, fxModalOpen) {
+      const nu = window.dash_clientside.no_update;
+      if (!storeData) return nu;
+      const m = getMetro();
+
+      // ---- Hype preview (loops while the modal stays open) ----
+      if (!hypeModalOpen) {
+        stopPreviewHype(m);
+        m.preview.hypeModalWasOpen = false;
+        m.preview.lastHypeUrl = null;
+      } else if (!m.preview.hypeModalWasOpen) {
+        // Modal just opened — record the current selection as the
+        // baseline so simply opening it doesn't trigger a preview.
+        m.preview.hypeModalWasOpen = true;
+        m.preview.lastHypeUrl = storeData.hype_url || null;
+      } else if ((storeData.hype_url || null) !== m.preview.lastHypeUrl) {
+        const newUrl = storeData.hype_url || null;
+        m.preview.lastHypeUrl = newUrl;
+        stopPreviewHype(m);
+        // If a session is already running, the main engine (see
+        // updateAudioEngine) already switches the live hype track itself
+        // — starting a second preview loop here would overlap with it
+        // and sound like an echo/phasing mess.
+        if (newUrl && !m.isRunning) {
+          ensureCtx(m);
+          loadBuffer(m, newUrl).then((buf) => {
+            if (!m.preview.hypeModalWasOpen) return; // modal closed while loading
+            if (m.preview.lastHypeUrl !== newUrl) return; // superseded by a newer pick
+            if (m.isRunning) return; // session started while loading
+            const src = m.ctx.createBufferSource();
+            src.buffer = buf;
+            src.loop = true;
+            src.connect(m.previewGain);
+            src.start(0);
+            m.preview.hypeSource = src;
+          });
+        }
+      }
+
+      // ---- FX preview (one-shot click per selection) ----
+      if (!fxModalOpen) {
+        m.preview.fxModalWasOpen = false;
+        m.preview.lastFxPreset = null;
+      } else if (!m.preview.fxModalWasOpen) {
+        m.preview.fxModalWasOpen = true;
+        m.preview.lastFxPreset = storeData.fx_preset || null;
+      } else if ((storeData.fx_preset || null) !== m.preview.lastFxPreset) {
+        const newPreset = storeData.fx_preset || null;
+        m.preview.lastFxPreset = newPreset;
+        if (newPreset) {
+          ensureCtx(m);
+          const originalPreset = m.fxPreset;
+          m.fxPreset = newPreset;
+          playClick(m, m.ctx.currentTime + 0.02, false);
+          m.fxPreset = originalPreset;
+        }
+      }
+
+      return nu;
     },
   },
 });

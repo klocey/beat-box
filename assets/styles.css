@@ -13,7 +13,7 @@
 }
 
 body {
-  background: linear-gradient(rgba(10, 0, 20, 0.72), rgba(10, 0, 20, 0.85)), url('BG.png') center / cover no-repeat fixed;
+  background: linear-gradient(rgba(10, 0, 20, 0.5), rgba(10, 0, 20, 0.5)), url('BG.png') center / cover no-repeat fixed;
   color: var(--text-light);
   font-family: 'Orbitron', sans-serif;
   min-height: 100vh;
@@ -104,18 +104,78 @@ body::before {
   text-shadow: 0 0 10px var(--neon-yellow), 0 0 25px var(--neon-yellow);
 }
 
-@keyframes pulseFlash {
+.beat-display {
+  position: relative;
+  overflow: visible;
+}
+
+.beat-ring {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  border-radius: 50%;
+  border: 5px solid rgba(0, 255, 249, 0.35);
+  background: transparent;
+  transform: translate(-50%, -50%) scale(1);
+  transition: border-color 0.15s ease-out, background-color 0.15s ease-out, box-shadow 0.15s ease-out;
+  pointer-events: none;
+}
+
+/* Restart trick: two identical keyframe sets under different names, so an
+   animation can retrigger even when the same beat type repeats back to
+   back (e.g. two minor beats in a row) — reapplying the same class name
+   wouldn't otherwise restart a CSS animation. */
+@keyframes ringVibrateA {
   0% {
-    transform: scale(1.15);
+    transform: translate(-50%, -50%) scale(1);
+  }
+  35% {
+    transform: translate(-50%, -50%) scale(var(--pulse-scale, 1.12));
   }
   100% {
-    transform: scale(1);
+    transform: translate(-50%, -50%) scale(1);
   }
 }
 
-.flash-even,
-.flash-odd {
-  animation: pulseFlash 0.15s ease-out;
+@keyframes ringVibrateB {
+  0% {
+    transform: translate(-50%, -50%) scale(1);
+  }
+  35% {
+    transform: translate(-50%, -50%) scale(var(--pulse-scale, 1.12));
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+.beat-display.pulse-a .beat-ring {
+  animation: ringVibrateA 0.3s ease-out;
+}
+
+.beat-display.pulse-b .beat-ring {
+  animation: ringVibrateB 0.3s ease-out;
+}
+
+/* Minor beat: dampened cyan, smaller vibration. */
+.beat-display.beat-minor {
+  --pulse-scale: 1.12;
+}
+
+.beat-display.beat-minor .beat-ring {
+  border-color: var(--neon-cyan);
+  box-shadow: 0 0 12px var(--neon-cyan);
+}
+
+/* Major beat (power punch): intense yellow, bigger vibration. */
+.beat-display.beat-major {
+  --pulse-scale: 1.35;
+}
+
+.beat-display.beat-major .beat-ring {
+  border-color: var(--neon-yellow);
+  background: rgba(249, 248, 113, 0.3);
+  box-shadow: 0 0 22px var(--neon-yellow), inset 0 0 15px rgba(249, 248, 113, 0.5);
 }
 
 .button-row {
