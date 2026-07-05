@@ -42,13 +42,13 @@ def format_mmss(total_seconds):
 
 HYPE_FILES = scan_audio_folder(HYPE_DIR)
 
-app = dash.Dash(
-    __name__, 
-    external_stylesheets=[dbc.themes.BOOTSTRAP],
-    suppress_callback_exceptions=True,
-    meta_tags=[{"name": "viewport", "content": "width=device-width, initial-scale=1.0"}]
-)
-server = app.server
+# --------------------------------------------------------------------------
+# App setup
+# --------------------------------------------------------------------------
+app = Dash(__name__, external_stylesheets=[dbc.themes.CYBORG], update_title=None)
+app.title = "Beat Box"
+server = app.server  # needed for Heroku (gunicorn app:server)
+
 
 default_hype_file = HYPE_FILES[0] if HYPE_FILES else None
 default_hype_url = app.get_asset_url(f"hype/{default_hype_file}") if default_hype_file else None
@@ -75,12 +75,6 @@ COMBOS = [
 ]
 COMBO_LABELS = {beats: name.upper() for name, beats, _ in COMBOS}
 
-# --------------------------------------------------------------------------
-# App setup
-# --------------------------------------------------------------------------
-app = Dash(__name__, external_stylesheets=[dbc.themes.CYBORG], update_title=None)
-app.title = "Beat Box"
-server = app.server  # needed for Heroku (gunicorn app:server)
 
 INITIAL_STATE = {
     "bpm": 120,
