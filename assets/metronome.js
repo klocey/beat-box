@@ -19,7 +19,7 @@ function getMetro() {
       nextNoteTime: 0,
       timerID: null,
       lookahead: 25,
-      scheduleAheadTime: 0.12,
+      scheduleAheadTime: 0.4,
       notesInQueue: [],
       fxUrl: null,
       hypeUrl: null,
@@ -80,7 +80,7 @@ function formatTime(ms) {
 }
 
 function loadBuffer(m, url) {
-  if (!url) return Promise.resolve(null);
+  if (!url || url === "SYNTH") return Promise.resolve(null);
   if (m.bufferCache[url]) return Promise.resolve(m.bufferCache[url]);
   return fetch(url)
     .then((r) => r.arrayBuffer())
@@ -97,21 +97,48 @@ function setMix(m, val) {
   const t = Math.max(0, Math.min(100, val)) / 100;
   const fxGainVal = Math.cos(t * 0.5 * Math.PI);
   const hypeGainVal = Math.sin(t * 0.5 * Math.PI);
-  if (m.fxGain) m.fxGain.gain.value = fxGainVal;
-  if (m.hypeGain) m.hypeGain.gain.value = hypeGainVal;
+  if (m.fxGain) m.fxGain.gain.value = fxGainVal * 4;
+  if (m.hypeGain) m.hypeGain.gain.value = hypeGainVal * 0.2;
+}
+
+// Synthesized metronome click — a short oscillator burst with a fast
+// attack/decay envelope, so it works with no audio file at all (and
+// therefore needs nothing served by Heroku either). The accent beat gets
+// both a higher pitch and more volume so it stands out clearly.
+function playSynthClick(m, time, isAccent) {
+  const osc = m.ctx.createOscillator();
+  osc.type = "square";
+  osc.frequency.setValueAtTime(isAccent ? 1600 : 950, time);
+
+  const gain = m.ctx.createGain();
+  const peak = isAccent ? 1.0 : 0.35;
+  gain.gain.setValueAtTime(0.0001, time);
+  gain.gain.exponentialRampToValueAtTime(peak, time + 0.002);
+  gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.05);
+
+  osc.connect(gain);
+  gain.connect(m.fxGain);
+  osc.start(time);
+  osc.stop(time + 0.06);
 }
 
 function scheduleTick(m, beatIndex, time) {
-  if (!m.fxBuffer) return;
   const totalTicks = m.beats * m.subdivisions;
   const isAccent = beatIndex === totalTicks - 1; // power punch = last hit in the combo
-  const src = m.ctx.createBufferSource();
-  src.buffer = m.fxBuffer;
-  const accentGain = m.ctx.createGain();
-  accentGain.gain.value = isAccent ? 1.0 : 0.25;
-  src.connect(accentGain);
-  accentGain.connect(m.fxGain);
-  src.start(time);
+
+  if (m.fxUrl === "SYNTH") {
+    playSynthClick(m, time, isAccent);
+  } else {
+    if (!m.fxBuffer) return;
+    const src = m.ctx.createBufferSource();
+    src.buffer = m.fxBuffer;
+    const accentGain = m.ctx.createGain();
+    accentGain.gain.value = isAccent ? 1.0 : 0.25;
+    src.connect(accentGain);
+    accentGain.connect(m.fxGain);
+    src.start(time);
+  }
+
   m.notesInQueue.push({ beatIndex: beatIndex, time: time, seq: m.tickSeq++, isAccent: isAccent });
   m.program.totalPunches += 1;
 }

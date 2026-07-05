@@ -61,18 +61,18 @@ app.title = "Beat Box"
 server = app.server  # needed for Heroku (gunicorn app:server)
 
 default_fx_file = FX_FILES[0] if FX_FILES else None
-default_fx_url = app.get_asset_url(f"fx/{default_fx_file}") if default_fx_file else None
+default_fx_url = app.get_asset_url(f"fx/{default_fx_file}") if default_fx_file else "SYNTH"
 
 INITIAL_STATE = {
-    "bpm": 140,
+    "bpm": 120,
     "beats": 3,
     "subdivisions": 1,
     "combo_label": COMBO_LABELS[3],
     "fx_url": default_fx_url,
     "hype_url": None,
-    "mix": 50,  # 0 = metronome only, 100 = music only
+    "mix": 20,  # 0 = metronome only, 100 = music only
     "running": False,
-    "rounds": 1,
+    "rounds": 3,
     "round_minutes": 1,
     "break_seconds": 30,
     "reset_token": 0,
@@ -144,12 +144,11 @@ def build_hype_modal():
 
 
 def build_fx_modal():
-    buttons = [
+    buttons = [dbc.Button("SYNTH CLICK", id="fx-synth-btn", className="neon-btn neon-btn-magenta m-2", n_clicks=0)]
+    buttons += [
         dbc.Button(label_from_filename(f), id={"type": "fx-btn", "index": f}, className="neon-btn m-2", n_clicks=0)
         for f in FX_FILES
     ]
-    if not FX_FILES:
-        buttons = [html.Div("No files found in assets/fx/", className="combo-label")]
     return dbc.Modal(
         [
             dbc.ModalHeader(dbc.ModalTitle("Metronome Sound")),
@@ -370,11 +369,12 @@ def toggle_hype_modal(_o, _off, _sel, is_open):
 @app.callback(
     Output("modal-fx", "is_open"),
     Input("btn-fx", "n_clicks"),
+    Input("fx-synth-btn", "n_clicks"),
     Input({"type": "fx-btn", "index": ALL}, "n_clicks"),
     State("modal-fx", "is_open"),
     prevent_initial_call=True,
 )
-def toggle_fx_modal(_o, _sel, is_open):
+def toggle_fx_modal(_o, _synth, _sel, is_open):
     if ctx.triggered_id == "btn-fx":
         return not is_open
     return False
@@ -465,17 +465,21 @@ def select_hype(_clicks, _off, data):
 
 @app.callback(
     Output("state-store", "data", allow_duplicate=True),
+    Input("fx-synth-btn", "n_clicks"),
     Input({"type": "fx-btn", "index": ALL}, "n_clicks"),
     State("state-store", "data"),
     prevent_initial_call=True,
 )
-def select_fx(_clicks, data):
+def select_fx(_synth, _clicks, data):
     trig = ctx.triggered_id
-    if isinstance(trig, dict):
-        data = dict(data)
+    data = dict(data)
+    if trig == "fx-synth-btn":
+        data["fx_url"] = "SYNTH"
+    elif isinstance(trig, dict):
         data["fx_url"] = app.get_asset_url(f"fx/{trig['index']}")
-        return data
-    return no_update
+    else:
+        return no_update
+    return data
 
 
 @app.callback(
