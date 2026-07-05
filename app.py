@@ -90,13 +90,13 @@ INITIAL_STATE = {
     "beats": 3,
     "subdivisions": 1,
     "combo_label": COMBO_LABELS[3],
-    "fx_preset": "heavy_bag",
+    "fx_preset": "kick_808",
     "hype_url": default_hype_url,
-    "mix": 100,  # 0 = metronome only, 100 = music only — starts full music, dial back to bring in the tick
+    "mix": 25,  # 0 = metronome only, 100 = music only — starts full music, dial back to bring in the tick
     "running": False,
-    "rounds": 3,
+    "rounds": 10,
     "round_minutes": 1,
-    "break_seconds": 10,
+    "break_seconds": 20,
     "reset_token": 0,
     "countdown_seconds": 3,
 }
