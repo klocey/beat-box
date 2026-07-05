@@ -92,7 +92,7 @@ INITIAL_STATE = {
     "combo_label": COMBO_LABELS[3],
     "fx_preset": "kick_808",
     "hype_url": default_hype_url,
-    "mix": 25,  # 0 = metronome only, 100 = music only — starts full music, dial back to bring in the tick
+    "mix": 100,  # 0 = metronome only, 100 = music only — starts full music, dial back to bring in the tick
     "running": False,
     "rounds": 10,
     "round_minutes": 1,
