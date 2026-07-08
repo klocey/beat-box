@@ -297,9 +297,11 @@ def build_countdown_modal():
 app.layout = dbc.Container(
     [
         dcc.Store(id="state-store", data=INITIAL_STATE),
+        dcc.Store(id="hype-urls-store", data=[app.get_asset_url(f"hype/{f}") for f in HYPE_FILES]),
         dcc.Interval(id="beat-poll-interval", interval=100, n_intervals=0),
         html.Div(id="audio-engine-dummy", style={"display": "none"}),
         html.Div(id="preview-engine-dummy", style={"display": "none"}),
+        html.Div(id="prefetch-dummy", style={"display": "none"}),
         html.Div("BEAT BOX", className="app-title", style={'marginBottom': '30px'},),
         html.Div(
             [
@@ -773,6 +775,12 @@ app.clientside_callback(
     Input("modal-hype", "is_open"),
     Input("modal-fx", "is_open"),
     prevent_initial_call=True,
+)
+
+app.clientside_callback(
+    ClientsideFunction(namespace="clientside", function_name="prefetchHype"),
+    Output("prefetch-dummy", "children"),
+    Input("hype-urls-store", "data"),
 )
 
 

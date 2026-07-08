@@ -896,5 +896,26 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
 
       return nu;
     },
+
+    // Fires once on page load with the full list of hype track URLs.
+    // Fetches and decodes every one of them in the background (results
+    // land in the shared bufferCache via loadBuffer), so that whichever
+    // track you click first — in the Hype modal for a preview, or via
+    // Start for the real session — is already decoded instead of making
+    // you wait through a fetch+decode on that first click. Doesn't need a
+    // user gesture: creating an AudioContext and calling decodeAudioData
+    // on it is allowed before any interaction — only actually starting
+    // playback requires a real click, which is handled separately by the
+    // existing global click/touchstart unlock listener.
+    prefetchHype: function (urls) {
+      const m = getMetro();
+      ensureCtx(m);
+      if (Array.isArray(urls)) {
+        urls.forEach((url) => {
+          if (url) loadBuffer(m, url).catch(() => {});
+        });
+      }
+      return window.dash_clientside.no_update;
+    },
   },
 });
