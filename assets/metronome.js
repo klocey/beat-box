@@ -4,6 +4,15 @@
 // by the poll interval) for the round/break countdown, which only needs
 // second-level precision.
 
+// Web Audio holds decoded audio as raw PCM, which is much larger than the
+// compressed source file (often 5-10x) — caching every track a user has
+// ever clicked, unbounded, can add up to hundreds of MB or more. That's
+// fine on a desktop/iPad, but can silently break audio on more
+// memory-constrained devices like a phone. Capping the cache size and
+// evicting least-recently-used entries keeps memory bounded regardless of
+// how large the track library grows.
+const MAX_CACHED_BUFFERS = 4;
+
 function getMetro() {
   if (!window._metro) {
     window._metro = {
@@ -26,6 +35,7 @@ function getMetro() {
       hypeBuffer: null,
       hypeSource: null,
       bufferCache: {},
+      bufferOrder: [],
       mix: 50,
       lastResetToken: null,
       program: {
@@ -91,13 +101,49 @@ function ensureCtx(m) {
 // longer considers it "inside" that gesture, so the context can get stuck
 // suspended forever. Unlocking directly on any real click/tap sidesteps
 // that entirely.
+//
+// iOS Safari is stricter than other browsers here: calling resume() alone
+// is sometimes not enough to fully unlock audio — the reliable fix is to
+// also actually play a silent buffer synchronously within the gesture,
+// which is what forces iOS to treat audio as unlocked for the rest of the
+// session. Doing this on every browser is harmless (silent, ~0ms), so we
+// don't need to special-case iOS specifically.
+function iosSilentUnlock(m) {
+  if (m._silentUnlocked || !m.ctx) return;
+  try {
+    const buffer = m.ctx.createBuffer(1, 1, 22050);
+    const source = m.ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(m.ctx.destination);
+    source.start(0);
+    m._silentUnlocked = true;
+  } catch (e) {
+    /* ignore — non-fatal if this fails */
+  }
+}
+
 if (!window._metroUnlockAttached) {
   window._metroUnlockAttached = true;
   const unlock = function () {
-    ensureCtx(getMetro());
+    const m = getMetro();
+    ensureCtx(m);
+    iosSilentUnlock(m);
   };
   document.addEventListener("click", unlock, { capture: true });
   document.addEventListener("touchstart", unlock, { capture: true });
+  document.addEventListener("touchend", unlock, { capture: true });
+
+  // iOS can suspend the AudioContext when the tab is backgrounded (app
+  // switch, screen lock) and not resume it automatically when you come
+  // back — re-resume on the next real interaction after becoming visible.
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible") {
+      const m = getMetro();
+      if (m.ctx && m.ctx.state === "suspended") {
+        m.ctx.resume();
+      }
+    }
+  });
 }
 
 function formatTime(ms) {
@@ -107,14 +153,32 @@ function formatTime(ms) {
   return String(mm).padStart(2, "0") + ":" + String(ss).padStart(2, "0");
 }
 
+function touchCacheEntry(m, url) {
+  const idx = m.bufferOrder.indexOf(url);
+  if (idx !== -1) m.bufferOrder.splice(idx, 1);
+  m.bufferOrder.push(url); // most-recently-used goes to the end
+}
+
+function evictLeastRecentlyUsed(m) {
+  while (m.bufferOrder.length > MAX_CACHED_BUFFERS) {
+    const oldest = m.bufferOrder.shift();
+    delete m.bufferCache[oldest];
+  }
+}
+
 function loadBuffer(m, url) {
   if (!url) return Promise.resolve(null);
-  if (m.bufferCache[url]) return Promise.resolve(m.bufferCache[url]);
+  if (m.bufferCache[url]) {
+    touchCacheEntry(m, url);
+    return Promise.resolve(m.bufferCache[url]);
+  }
   return fetch(url)
     .then((r) => r.arrayBuffer())
     .then((data) => m.ctx.decodeAudioData(data))
     .then((buf) => {
       m.bufferCache[url] = buf;
+      touchCacheEntry(m, url);
+      evictLeastRecentlyUsed(m);
       return buf;
     });
 }
@@ -902,29 +966,31 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
       return nu;
     },
 
-    // Fires once on page load with the full list of hype track URLs.
-    // Fetches and decodes every one of them in the background (results
-    // land in the shared bufferCache via loadBuffer), so that whichever
-    // track you click first — in the Hype modal for a preview, or via
-    // Start for the real session — is already decoded instead of making
-    // you wait through a fetch+decode on that first click. Doesn't need a
+    // Fires once on page load with the full list of hype track URLs. Only
+    // proactively warms a small, bounded number of them (matching the LRU
+    // cache size) — decoding the *entire* library into memory up front is
+    // what caused audio to silently break on more memory-constrained
+    // devices (notably: worked fine on iPad/desktop, broke on iPhone,
+    // once the library grew past ~20 tracks). The rest still load
+    // on-demand the first time you click them, same as before prefetching
+    // existed, with the loading banner covering that wait. Doesn't need a
     // user gesture: creating an AudioContext and calling decodeAudioData
     // on it is allowed before any interaction — only actually starting
-    // playback requires a real click, which is handled separately by the
-    // existing global click/touchstart unlock listener.
+    // playback requires a real click, handled separately by the existing
+    // global click/touchstart unlock listener.
     prefetchHype: function (urls) {
       const m = getMetro();
       ensureCtx(m);
-      const list = Array.isArray(urls) ? urls.filter(Boolean) : [];
+      const fullList = Array.isArray(urls) ? urls.filter(Boolean) : [];
+      const list = fullList.slice(0, MAX_CACHED_BUFFERS);
       m.prefetch.total = list.length;
       m.prefetch.loaded = 0;
       m.prefetch.done = list.length === 0;
 
-      // Sequential, not all-at-once — firing 20+ simultaneous fetch+decode
-      // calls right as the page loads floods the CPU/network and makes
-      // the whole page feel stuck if you click anything during that
-      // window. One at a time keeps the browser responsive throughout,
-      // at the cost of the full set taking a bit longer to finish caching.
+      // Sequential, not all-at-once — firing several simultaneous
+      // fetch+decode calls right as the page loads competes with the
+      // browser trying to render/respond to clicks. One at a time keeps
+      // things responsive throughout.
       let chain = Promise.resolve();
       list.forEach((url) => {
         chain = chain
