@@ -649,57 +649,62 @@ def update_countdown_seconds(_3, _5, _10, data):
 @app.callback(
     Output("btn-start-stop", "children"),
     Output("btn-start-stop", "className"),
-    Input("state-store", "data"),
-)
-def sync_start_button(data):
-    running = data.get("running", False)
-    if running:
-        return "STOP", "control-btn neon-btn neon-btn-red"
-    return "START", "control-btn neon-btn neon-btn-green"
-
-
-@app.callback(
     Output("combo-label-display", "children"),
-    Input("state-store", "data"),
-)
-def sync_combo_label(data):
-    return data.get("combo_label", "")
-
-
-@app.callback(
     Output({"type": "hype-btn", "index": ALL}, "className"),
     Output("hype-off-btn", "className"),
-    Input("state-store", "data"),
-)
-def sync_hype_button_colors(data):
-    current_url = data.get("hype_url")
-    hype_classes = []
-    for f in HYPE_FILES:
-        url = app.get_asset_url(f"hype/{f}")
-        if url == current_url:
-            hype_classes.append("neon-btn neon-btn-magenta m-2")
-        else:
-            hype_classes.append("neon-btn m-2")
-    off_class = "neon-btn neon-btn-magenta m-2" if current_url is None else "neon-btn m-2"
-    return hype_classes, off_class
-
-
-@app.callback(
     Output("fx-preset-soft_tock", "className"),
     Output("fx-preset-soft_thump", "className"),
     Output("fx-preset-heavy_bag", "className"),
     Output("fx-preset-bass_drop", "className"),
     Output("fx-preset-kick_808", "className"),
     Output("fx-preset-retro_clap", "className"),
+    Output("program-round-min-display", "children"),
+    Output("beat-poll-interval", "disabled"),
     Input("state-store", "data"),
 )
-def sync_fx_button_colors(data):
-    current = data.get("fx_preset")
-    order = ["soft_tock", "soft_thump", "heavy_bag", "bass_drop", "kick_808", "retro_clap"]
-    return [
-        "neon-btn neon-btn-magenta m-2" if key == current else "neon-btn m-2"
-        for key in order
+def sync_all_displays(data):
+    # Consolidated from 6 separate callbacks that all fired on every single
+    # state-store change — each one meant its own Heroku round trip, so a
+    # single click could cost 6+ separate HTTP requests before anything
+    # visibly updated. Merging them into one callback with many Outputs
+    # cuts that to a single request, which is where network latency (vs.
+    # localhost) is actually felt.
+    running = data.get("running", False)
+    start_children, start_class = (
+        ("STOP", "control-btn neon-btn neon-btn-red")
+        if running
+        else ("START", "control-btn neon-btn neon-btn-green")
+    )
+
+    combo_label = data.get("combo_label", "")
+
+    current_hype_url = data.get("hype_url")
+    hype_classes = []
+    for f in HYPE_FILES:
+        url = app.get_asset_url(f"hype/{f}")
+        hype_classes.append("neon-btn neon-btn-magenta m-2" if url == current_hype_url else "neon-btn m-2")
+    off_class = "neon-btn neon-btn-magenta m-2" if current_hype_url is None else "neon-btn m-2"
+
+    current_fx = data.get("fx_preset")
+    fx_order = ["soft_tock", "soft_thump", "heavy_bag", "bass_drop", "kick_808", "retro_clap"]
+    fx_classes = [
+        "neon-btn neon-btn-magenta m-2" if key == current_fx else "neon-btn m-2" for key in fx_order
     ]
+
+    round_min_display = f"{data.get('round_minutes', 1)} MIN SELECTED"
+
+    poll_disabled = not running
+
+    return (
+        start_children,
+        start_class,
+        combo_label,
+        hype_classes,
+        off_class,
+        *fx_classes,
+        round_min_display,
+        poll_disabled,
+    )
 
 
 @app.callback(
@@ -724,23 +729,6 @@ def sync_rounds_display(value):
 )
 def sync_break_display(value):
     return f"{value} SEC BREAK"
-
-
-@app.callback(
-    Output("program-round-min-display", "children"),
-    Input("state-store", "data"),
-)
-def sync_round_min_display(data):
-    return f"{data.get('round_minutes', 1)} MIN SELECTED"
-
-
-@app.callback(
-    Output("beat-poll-interval", "disabled"),
-    Input("state-store", "data"),
-)
-def toggle_poll_interval(data):
-    # Only poll for live display updates while the metronome is running.
-    return not data.get("running", False)
 
 
 # --------------------------------------------------------------------------

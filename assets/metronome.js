@@ -37,6 +37,8 @@ function getMetro() {
         remainingMs: 0,
         totalPunches: 0,
         lastPollTime: 0,
+        tenSecWarned: false,
+        lastBreakBeepSecond: null,
       },
       countdown: {
         active: false,
@@ -44,6 +46,7 @@ function getMetro() {
         lastPollTime: 0,
         storeDataSnapshot: null,
         configuredSeconds: 10,
+        lastBeepSecond: null,
       },
       previewGain: null,
       preview: {
@@ -310,6 +313,73 @@ function playBell(m) {
   });
 }
 
+// Short, clean warning tone — deliberately distinct from the bell (much
+// shorter, no metallic partials, a single simple pitch). Used both as a
+// one-time "10 seconds left" cue during a round, and repeated for the
+// 3-2-1 countdown into a round start. Plays through the same dedicated
+// gain node as the bell, so it's never affected by Mix or FX preset.
+function playBeep(m) {
+  if (!m.ctx) return;
+  const time = m.ctx.currentTime + 0.005;
+  const osc = m.ctx.createOscillator();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(1100, time);
+  const gain = m.ctx.createGain();
+  gain.gain.setValueAtTime(0.0001, time);
+  gain.gain.linearRampToValueAtTime(0.5, time + 0.006);
+  gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.18);
+  osc.connect(gain);
+  gain.connect(m.bellGain);
+  osc.start(time);
+  osc.stop(time + 0.2);
+}
+
+// Round-end warning (10 seconds left) — deliberately more prominent than
+// the quick 3-2-1 beep: two back-to-back pulses, louder, and each pulse
+// holds near its peak briefly (a short plateau) instead of decaying
+// immediately, so it reads as "longer" rather than just another quick
+// tick. Easy to catch even mid-combo.
+function playRoundWarning(m) {
+  if (!m.ctx) return;
+  const baseTime = m.ctx.currentTime + 0.01;
+  const pulseDur = 0.22;
+  const gap = 0.12;
+  [0, pulseDur + gap].forEach((offset) => {
+    const time = baseTime + offset;
+    const osc = m.ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(1300, time);
+    const gain = m.ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, time);
+    gain.gain.linearRampToValueAtTime(0.65, time + 0.012);
+    gain.gain.setValueAtTime(0.65, time + pulseDur - 0.04);
+    gain.gain.exponentialRampToValueAtTime(0.0001, time + pulseDur);
+    osc.connect(gain);
+    gain.connect(m.bellGain);
+    osc.start(time);
+    osc.stop(time + pulseDur + 0.02);
+  });
+}
+
+// A short, bright triangle-wave ping with a quick downward pitch slide —
+// layered on top of the base preset sound only for the major beat (see
+// playClick). This is what makes the power punch a genuinely different
+// timbre from the minor beats, not just a louder copy of the same sound.
+function playAccentLayer(m, time) {
+  const osc = m.ctx.createOscillator();
+  osc.type = "triangle";
+  osc.frequency.setValueAtTime(1800, time);
+  osc.frequency.exponentialRampToValueAtTime(1200, time + 0.05);
+  const gain = m.ctx.createGain();
+  gain.gain.setValueAtTime(0.0001, time);
+  gain.gain.linearRampToValueAtTime(0.35, time + 0.004);
+  gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.09);
+  osc.connect(gain);
+  gain.connect(m.fxGain);
+  osc.start(time);
+  osc.stop(time + 0.1);
+}
+
 function playClick(m, time, isAccent) {
   switch (m.fxPreset) {
     case "soft_thump":
@@ -331,6 +401,14 @@ function playClick(m, time, isAccent) {
     default:
       playSoftTock(m, time, isAccent);
       break;
+  }
+  // The major beat gets an extra bright harmonic layered on top of
+  // whichever preset is selected — a genuinely different timbre (fuller,
+  // brighter), not just the same sound turned up. Minor beats never get
+  // this layer, so the two are easy to tell apart by ear regardless of
+  // which FX preset you've picked.
+  if (isAccent) {
+    playAccentLayer(m, time);
   }
 }
 
@@ -409,6 +487,8 @@ function hardReset(m, storeData) {
     remainingMs: 0,
     totalPunches: 0,
     lastPollTime: 0,
+    tenSecWarned: false,
+    lastBreakBeepSecond: null,
   };
   m.countdown = {
     active: false,
@@ -416,9 +496,46 @@ function hardReset(m, storeData) {
     lastPollTime: 0,
     storeDataSnapshot: null,
     configuredSeconds: storeData.countdown_seconds || 10,
+    lastBeepSecond: null,
   };
   m.currentTick = 0;
   m.notesInQueue = [];
+}
+
+// Lets Program-modal changes (rounds / round length / break length) take
+// effect immediately, even mid-round or mid-break, rather than only on
+// the next fresh Start. If you're currently IN a round and shorten round
+// length, this recomputes remaining time as (new length - time already
+// elapsed) rather than just swapping the total, so a shorter round
+// actually gets shorter right away instead of waiting for round 2.
+// Same idea for break length during a break. Does nothing before a
+// program has actually started (idle/finished) — those cases already
+// pick up fresh config whenever Start begins a new run.
+function applyLiveProgramConfig(m, storeData) {
+  const p = m.program;
+  if (p.phase === "idle" || p.phase === "finished") return;
+
+  const newRounds = storeData.rounds || 1;
+  const newRoundMs = (storeData.round_minutes || 1) * 60000;
+  const newBreakMs = (storeData.break_seconds || 30) * 1000;
+
+  p.rounds = newRounds;
+
+  if (newRoundMs !== p.roundMs) {
+    if (p.phase === "round") {
+      const elapsed = p.roundMs - p.remainingMs;
+      p.remainingMs = Math.max(1000, newRoundMs - elapsed);
+    }
+    p.roundMs = newRoundMs;
+  }
+
+  if (newBreakMs !== p.breakMs) {
+    if (p.phase === "break") {
+      const elapsed = p.breakMs - p.remainingMs;
+      p.remainingMs = Math.max(1000, newBreakMs - elapsed);
+    }
+    p.breakMs = newBreakMs;
+  }
 }
 
 function startEngine(m, storeData) {
@@ -435,6 +552,7 @@ function startEngine(m, storeData) {
     p.phase = "round";
     p.remainingMs = p.roundMs;
     p.totalPunches = 0;
+    p.tenSecWarned = false;
   }
   // Otherwise we're resuming from a pause mid-round or mid-break — keep
   // currentRound / phase / remainingMs / totalPunches exactly as they were.
@@ -528,6 +646,8 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
       const hypeChanged = newHypeUrl !== m.hypeUrl;
       m.hypeUrl = newHypeUrl;
 
+      applyLiveProgramConfig(m, storeData);
+
       let countdownOpen = nu;
       let countdownText = nu;
 
@@ -542,6 +662,7 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
         m.countdown.configuredSeconds = seconds;
         m.countdown.lastPollTime = performance.now();
         m.countdown.storeDataSnapshot = storeData;
+        m.countdown.lastBeepSecond = null;
         countdownOpen = true;
         countdownText = String(seconds);
       } else if (!wantRunning) {
@@ -574,6 +695,7 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
           if (seconds !== m.countdown.configuredSeconds) {
             m.countdown.configuredSeconds = seconds;
             m.countdown.remainingMs = seconds * 1000;
+            m.countdown.lastBeepSecond = null;
             countdownOpen = true;
             countdownText = String(seconds);
           }
@@ -619,6 +741,10 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
           return [nu, nu, nu, nu, nu, nu, nu, false, ""];
         }
         const secondsLeft = Math.ceil(m.countdown.remainingMs / 1000);
+        if (secondsLeft <= 3 && secondsLeft !== m.countdown.lastBeepSecond) {
+          m.countdown.lastBeepSecond = secondsLeft;
+          playBeep(m);
+        }
         return [nu, nu, nu, nu, nu, nu, nu, true, String(secondsLeft)];
       }
 
@@ -632,6 +758,21 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
       p.lastPollTime = now;
       p.remainingMs -= delta;
 
+      // One-time warning beep with 10 seconds left in a round.
+      if (p.phase === "round" && p.remainingMs > 0 && p.remainingMs <= 10000 && !p.tenSecWarned) {
+        p.tenSecWarned = true;
+        playRoundWarning(m);
+      }
+
+      // 3-2-1 beeps in the final seconds of a break, leading into the bell.
+      if (p.phase === "break") {
+        const secondsLeft = Math.ceil(p.remainingMs / 1000);
+        if (secondsLeft >= 1 && secondsLeft <= 3 && secondsLeft !== p.lastBreakBeepSecond) {
+          p.lastBreakBeepSecond = secondsLeft;
+          playBeep(m);
+        }
+      }
+
       let justFinished = false;
 
       if (p.remainingMs <= 0) {
@@ -642,6 +783,7 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
           } else {
             p.phase = "break";
             p.remainingMs += p.breakMs;
+            p.lastBreakBeepSecond = null;
           }
           applyMixForPhase(m);
           playBell(m); // round end
@@ -649,6 +791,7 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
           p.phase = "round";
           p.currentRound += 1;
           p.remainingMs += p.roundMs;
+          p.tenSecWarned = false;
           m.currentTick = 0;
           m.notesInQueue = [];
           m.nextNoteTime = m.ctx.currentTime + 0.1;
