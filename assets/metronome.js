@@ -56,6 +56,11 @@ function getMetro() {
         fxModalWasOpen: false,
         lastFxPreset: null,
       },
+      prefetch: {
+        total: 0,
+        loaded: 0,
+        done: false,
+      },
     };
   }
   return window._metro;
@@ -910,12 +915,43 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
     prefetchHype: function (urls) {
       const m = getMetro();
       ensureCtx(m);
-      if (Array.isArray(urls)) {
-        urls.forEach((url) => {
-          if (url) loadBuffer(m, url).catch(() => {});
-        });
-      }
+      const list = Array.isArray(urls) ? urls.filter(Boolean) : [];
+      m.prefetch.total = list.length;
+      m.prefetch.loaded = 0;
+      m.prefetch.done = list.length === 0;
+
+      // Sequential, not all-at-once — firing 20+ simultaneous fetch+decode
+      // calls right as the page loads floods the CPU/network and makes
+      // the whole page feel stuck if you click anything during that
+      // window. One at a time keeps the browser responsive throughout,
+      // at the cost of the full set taking a bit longer to finish caching.
+      let chain = Promise.resolve();
+      list.forEach((url) => {
+        chain = chain
+          .then(() => loadBuffer(m, url))
+          .catch(() => {})
+          .then(() => {
+            m.prefetch.loaded += 1;
+          });
+      });
+      chain.then(() => {
+        m.prefetch.done = true;
+      });
+
       return window.dash_clientside.no_update;
+    },
+
+    // Polled every ~300ms while hype tracks are still prefetching, purely
+    // to drive the "loading tracks" banner + spinner in the Hype modal.
+    // Self-disables (via its own Output) the moment prefetching finishes.
+    prefetchPoll: function () {
+      const nu = window.dash_clientside.no_update;
+      const m = getMetro();
+      if (!m.prefetch || m.prefetch.total === 0 || m.prefetch.done) {
+        return [true, { display: "none" }, nu];
+      }
+      const pct = Math.round((m.prefetch.loaded / m.prefetch.total) * 100);
+      return [false, { display: "block" }, "LOADING BADASS HYPE TRACKS... " + pct + "%"];
     },
   },
 });

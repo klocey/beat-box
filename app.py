@@ -158,13 +158,31 @@ def build_hype_modal():
     return dbc.Modal(
         [
             dbc.ModalHeader(dbc.ModalTitle("Hype Music")),
-            dbc.ModalBody(html.Div(buttons, className="button-row")),
+            dbc.ModalBody(
+                [
+                    html.Div(
+                        [
+                            html.Div(className="hype-spinner"),
+                            html.Div(
+                                "LOADING BADASS HYPE TRACKS...",
+                                id="hype-loading-banner",
+                                className="combo-label",
+                            ),
+                        ],
+                        id="hype-loading-wrap",
+                        className="hype-loading",
+                        style={"display": "none"},
+                    ),
+                    html.Div(buttons, className="button-row"),
+                ]
+            ),
             dbc.ModalFooter(dbc.Button("Close", id="hype-close-btn", className="neon-btn neon-btn-magenta")),
         ],
         id="modal-hype",
         is_open=False,
         centered=True,
     )
+
 
 
 def build_fx_modal():
@@ -299,6 +317,7 @@ app.layout = dbc.Container(
         dcc.Store(id="state-store", data=INITIAL_STATE),
         dcc.Store(id="hype-urls-store", data=[app.get_asset_url(f"hype/{f}") for f in HYPE_FILES]),
         dcc.Interval(id="beat-poll-interval", interval=100, n_intervals=0),
+        dcc.Interval(id="prefetch-poll-interval", interval=300, n_intervals=0),
         html.Div(id="audio-engine-dummy", style={"display": "none"}),
         html.Div(id="preview-engine-dummy", style={"display": "none"}),
         html.Div(id="prefetch-dummy", style={"display": "none"}),
@@ -783,6 +802,14 @@ app.clientside_callback(
     Input("hype-urls-store", "data"),
 )
 
+app.clientside_callback(
+    ClientsideFunction(namespace="clientside", function_name="prefetchPoll"),
+    Output("prefetch-poll-interval", "disabled"),
+    Output("hype-loading-wrap", "style"),
+    Output("hype-loading-banner", "children"),
+    Input("prefetch-poll-interval", "n_intervals"),
+)
+
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8050, debug=False)
+    app.run(host="0.0.0.0", port=8050, debug=True)
